@@ -1,8 +1,16 @@
 'use client';
 
 import Image from 'next/image';
-import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
-import { Image as ImageIcon, Star, Settings2, Globe2, Layers, Cpu, Code2, Terminal, ExternalLink, Zap, ChevronRight, Hash, Sparkles, MonitorPlay, Bot, Clipboard, Check } from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ChangeEvent,
+} from 'react';
+import { Image as ImageIcon, Star, Settings2, Globe2, Layers, Cpu, Code2, Terminal, ExternalLink, Zap, ChevronRight, Hash, Sparkles, MonitorPlay, Bot, Clipboard, Check, Eye, EyeOff } from 'lucide-react';
 import {
   RATING_PROVIDER_OPTIONS,
   parseRatingPreferencesAllowEmpty,
@@ -46,6 +54,7 @@ type ProxyType = (typeof PROXY_TYPES)[number];
 type ProxyEnabledTypes = Record<ProxyType, boolean>;
 type StreamBadgesSetting = 'auto' | 'on' | 'off';
 type QualityBadgesSide = 'left' | 'right';
+type PosterQualityBadgesPosition = 'auto' | QualityBadgesSide;
 const DEFAULT_QUALITY_BADGES_STYLE: RatingStyle = 'glass';
 const STREAM_BADGE_OPTIONS: Array<{ id: StreamBadgesSetting; label: string }> = [
   { id: 'auto', label: 'Auto' },
@@ -53,6 +62,14 @@ const STREAM_BADGE_OPTIONS: Array<{ id: StreamBadgesSetting; label: string }> = 
   { id: 'off', label: 'Off' },
 ];
 const QUALITY_BADGE_SIDE_OPTIONS: Array<{ id: QualityBadgesSide; label: string }> = [
+  { id: 'left', label: 'Left' },
+  { id: 'right', label: 'Right' },
+];
+const POSTER_QUALITY_BADGE_POSITION_OPTIONS: Array<{
+  id: PosterQualityBadgesPosition;
+  label: string;
+}> = [
+  { id: 'auto', label: 'Auto' },
   { id: 'left', label: 'Left' },
   { id: 'right', label: 'Right' },
 ];
@@ -69,6 +86,8 @@ const isStreamBadgesSetting = (value: unknown): value is StreamBadgesSetting =>
   value === 'auto' || value === 'on' || value === 'off';
 const isQualityBadgesSide = (value: unknown): value is QualityBadgesSide =>
   value === 'left' || value === 'right';
+const isPosterQualityBadgesPosition = (value: unknown): value is PosterQualityBadgesPosition =>
+  value === 'auto' || value === 'left' || value === 'right';
 const isImageText = (value: unknown): value is 'original' | 'clean' | 'alternative' =>
   value === 'original' || value === 'clean' || value === 'alternative';
 const isRatingStyle = (value: unknown): value is RatingStyle =>
@@ -125,6 +144,15 @@ const safeLocalStorageRemove = (key: string) => {
   }
 };
 
+const subscribeToNothing = () => () => {};
+
+const useClientOrigin = () =>
+  useSyncExternalStore(
+    subscribeToNothing,
+    () => window.location.origin,
+    () => ''
+  );
+
 const encodeBase64Url = (value: string) => {
   const bytes = new TextEncoder().encode(value);
   let binary = '';
@@ -153,6 +181,8 @@ const downloadJsonFile = (payload: Record<string, unknown>, filename: string) =>
   URL.revokeObjectURL(url);
 };
 
+const maskSensitiveText = (value: string) => value.replace(/[^\s]/g, '*');
+
 export default function Home() {
   const [previewType, setPreviewType] = useState<'poster' | 'backdrop' | 'logo'>('poster');
   const [mediaId, setMediaId] = useState('tt0133093');
@@ -171,6 +201,8 @@ export default function Home() {
   const [posterStreamBadges, setPosterStreamBadges] = useState<StreamBadgesSetting>('auto');
   const [backdropStreamBadges, setBackdropStreamBadges] = useState<StreamBadgesSetting>('auto');
   const [qualityBadgesSide, setQualityBadgesSide] = useState<QualityBadgesSide>('left');
+  const [posterQualityBadgesPosition, setPosterQualityBadgesPosition] =
+    useState<PosterQualityBadgesPosition>('auto');
   const [posterQualityBadgesStyle, setPosterQualityBadgesStyle] = useState<RatingStyle>(DEFAULT_QUALITY_BADGES_STYLE);
   const [backdropQualityBadgesStyle, setBackdropQualityBadgesStyle] = useState<RatingStyle>(DEFAULT_QUALITY_BADGES_STYLE);
   const [posterRatingsLayout, setPosterRatingsLayout] = useState<PosterRatingLayout>('bottom');
@@ -180,8 +212,6 @@ export default function Home() {
   const [logoRatingStyle, setLogoRatingStyle] = useState<RatingStyle>('plain');
   const [posterRatingsMaxPerSide, setPosterRatingsMaxPerSide] = useState<number | null>(DEFAULT_POSTER_RATINGS_MAX_PER_SIDE);
   const [supportedLanguages, setSupportedLanguages] = useState(SUPPORTED_LANGUAGES);
-  const [previewUrl, setPreviewUrl] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
   const [mdblistKey, setMdblistKey] = useState('');
   const [tmdbKey, setTmdbKey] = useState('');
   const [proxyManifestUrl, setProxyManifestUrl] = useState('');
@@ -191,18 +221,23 @@ export default function Home() {
     logo: true,
   });
   const [proxyTranslateMeta, setProxyTranslateMeta] = useState(false);
-  const [proxyUrl, setProxyUrl] = useState('');
   const [proxyCopied, setProxyCopied] = useState(false);
-  const [configString, setConfigString] = useState('');
   const [configCopied, setConfigCopied] = useState(false);
+  const [showConfigString, setShowConfigString] = useState(false);
+  const [showProxyUrl, setShowProxyUrl] = useState(false);
   const [exportStatus, setExportStatus] = useState<'idle' | 'with' | 'without'>('idle');
   const [importStatus, setImportStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [importMessage, setImportMessage] = useState('');
   const navRef = useRef<HTMLElement | null>(null);
+  const baseUrl = normalizeBaseUrl(useClientOrigin());
 
   const [copied, setCopied] = useState(false);
   const shouldShowPosterQualityBadgesSide = posterRatingsLayout === 'top-bottom';
+  const shouldShowPosterQualityBadgesPosition =
+    posterRatingsLayout === 'top' || posterRatingsLayout === 'bottom';
   const shouldShowQualityBadgesSide = previewType === 'poster' && shouldShowPosterQualityBadgesSide;
+  const shouldShowQualityBadgesPosition =
+    previewType === 'poster' && shouldShowPosterQualityBadgesPosition;
   const qualityBadgeTypeLabel = previewType === 'backdrop' ? 'Backdrop' : 'Poster';
   const activeStreamBadges = previewType === 'backdrop' ? backdropStreamBadges : posterStreamBadges;
   const setActiveStreamBadges = previewType === 'backdrop' ? setBackdropStreamBadges : setPosterStreamBadges;
@@ -213,19 +248,20 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-
-    const origin = window.location.origin;
-    setBaseUrl(origin);
-
     const storedTmdbKey = safeLocalStorageGet(TMDB_KEY_STORAGE_KEY);
-    if (storedTmdbKey) {
-      setTmdbKey(storedTmdbKey);
-    }
-
     const storedMdblistKey = safeLocalStorageGet(MDBLIST_KEY_STORAGE_KEY);
-    if (storedMdblistKey) {
-      setMdblistKey(storedMdblistKey);
+    if (!storedTmdbKey && !storedMdblistKey) {
+      return;
     }
+    const frameId = window.requestAnimationFrame(() => {
+      if (storedTmdbKey) {
+        setTmdbKey(storedTmdbKey);
+      }
+      if (storedMdblistKey) {
+        setMdblistKey(storedMdblistKey);
+      }
+    });
+    return () => window.cancelAnimationFrame(frameId);
   }, []);
 
   useEffect(() => {
@@ -328,7 +364,8 @@ lang                    | Any TMDB ISO 639-1 code (en, it, fr, es, de, ja, ko, e
 streamBadges            | auto, on, off (global fallback)                                      | auto
 posterStreamBadges      | auto, on, off (poster only)                                          | auto
 backdropStreamBadges    | auto, on, off (backdrop only)                                        | auto
-qualityBadgesSide       | left, right (poster only)                                            | left
+qualityBadgesSide       | left, right (poster top-bottom only)                                 | left
+posterQualityBadgesPosition | auto, left, right (poster top/bottom only)                       | auto
 qualityBadgesStyle      | glass, square, plain (global fallback)                               | glass
 posterQualityBadgesStyle| glass, square, plain (poster only)                                   | glass
 backdropQualityBadgesStyle| glass, square, plain (backdrop only)                               | glass
@@ -356,7 +393,7 @@ Quality badges style can be set per-type via cfg.posterQualityBadgesStyle / cfg.
 --- URL BUILD ---
 const typeRatingStyle = type === 'poster' ? cfg.posterRatingStyle : type === 'backdrop' ? cfg.backdropRatingStyle : cfg.logoRatingStyle;
 const typeImageText = type === 'backdrop' ? cfg.backdropImageText : cfg.posterImageText;
-\${cfg.baseUrl}/\${type}/\${id}.jpg?tmdbKey=\${cfg.tmdbKey}&mdblistKey=\${cfg.mdblistKey}&ratings=\${cfg.ratings}&posterRatings=\${cfg.posterRatings}&backdropRatings=\${cfg.backdropRatings}&logoRatings=\${cfg.logoRatings}&lang=\${cfg.lang}&streamBadges=\${cfg.streamBadges}&posterStreamBadges=\${cfg.posterStreamBadges}&backdropStreamBadges=\${cfg.backdropStreamBadges}&qualityBadgesSide=\${cfg.qualityBadgesSide}&qualityBadgesStyle=\${cfg.qualityBadgesStyle}&posterQualityBadgesStyle=\${cfg.posterQualityBadgesStyle}&backdropQualityBadgesStyle=\${cfg.backdropQualityBadgesStyle}&ratingStyle=\${typeRatingStyle}&imageText=\${typeImageText}&posterRatingsLayout=\${cfg.posterRatingsLayout}&posterRatingsMaxPerSide=\${cfg.posterRatingsMaxPerSide}&backdropRatingsLayout=\${cfg.backdropRatingsLayout}
+\${cfg.baseUrl}/\${type}/\${id}.jpg?tmdbKey=\${cfg.tmdbKey}&mdblistKey=\${cfg.mdblistKey}&ratings=\${cfg.ratings}&posterRatings=\${cfg.posterRatings}&backdropRatings=\${cfg.backdropRatings}&logoRatings=\${cfg.logoRatings}&lang=\${cfg.lang}&streamBadges=\${cfg.streamBadges}&posterStreamBadges=\${cfg.posterStreamBadges}&backdropStreamBadges=\${cfg.backdropStreamBadges}&qualityBadgesSide=\${cfg.qualityBadgesSide}&posterQualityBadgesPosition=\${cfg.posterQualityBadgesPosition}&qualityBadgesStyle=\${cfg.qualityBadgesStyle}&posterQualityBadgesStyle=\${cfg.posterQualityBadgesStyle}&backdropQualityBadgesStyle=\${cfg.backdropQualityBadgesStyle}&ratingStyle=\${typeRatingStyle}&imageText=\${typeImageText}&posterRatingsLayout=\${cfg.posterRatingsLayout}&posterRatingsMaxPerSide=\${cfg.posterRatingsMaxPerSide}&backdropRatingsLayout=\${cfg.backdropRatingsLayout}
 
 Omit imageText when type=logo.
 
@@ -367,7 +404,7 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     setTimeout(() => setCopied(false), 2000);
   }, []);
 
-  useEffect(() => {
+  const previewUrl = useMemo(() => {
     const ratingPreferencesForType =
       previewType === 'poster'
         ? posterRatingPreferences
@@ -402,6 +439,9 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     if (shouldShowQualityBadgesSide && qualityBadgesSide !== 'left') {
       query.set('qualityBadgesSide', qualityBadgesSide);
     }
+    if (shouldShowQualityBadgesPosition && posterQualityBadgesPosition !== 'auto') {
+      query.set('posterQualityBadgesPosition', posterQualityBadgesPosition);
+    }
     if (previewType !== 'logo' && qualityBadgesStyleForType !== DEFAULT_QUALITY_BADGES_STYLE) {
       query.set(
         previewType === 'backdrop' ? 'backdropQualityBadgesStyle' : 'posterQualityBadgesStyle',
@@ -428,12 +468,10 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
       query.set('backdropRatingsLayout', backdropRatingsLayout);
     }
 
-    const origin = normalizeBaseUrl(baseUrl || (typeof window !== 'undefined' ? window.location.origin : ''));
-    if (!origin) {
-      setPreviewUrl('');
-      return;
+    if (!baseUrl) {
+      return '';
     }
-    setPreviewUrl(`${origin}/${previewType}/${mediaId}.jpg?${query.toString()}`);
+    return `${baseUrl}/${previewType}/${mediaId}.jpg?${query.toString()}`;
   }, [
     previewType,
     mediaId,
@@ -445,10 +483,13 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     logoRatingPreferences,
     posterStreamBadges,
     backdropStreamBadges,
+    shouldShowQualityBadgesSide,
+    shouldShowQualityBadgesPosition,
     posterRatingsLayout,
     posterRatingsMaxPerSide,
     backdropRatingsLayout,
     qualityBadgesSide,
+    posterQualityBadgesPosition,
     posterQualityBadgesStyle,
     backdropQualityBadgesStyle,
     posterRatingStyle,
@@ -459,17 +500,15 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     tmdbKey,
   ]);
 
-  useEffect(() => {
-    const origin = normalizeBaseUrl(baseUrl || (typeof window !== 'undefined' ? window.location.origin : ''));
+  const configString = useMemo(() => {
     const tmdb = tmdbKey.trim();
     const mdb = mdblistKey.trim();
-    if (!origin || !tmdb || !mdb) {
-      setConfigString('');
-      return;
+    if (!baseUrl || !tmdb || !mdb) {
+      return '';
     }
 
     const config: Record<string, string | number> = {
-      baseUrl: origin,
+      baseUrl,
       tmdbKey: tmdb,
       mdblistKey: mdb,
     };
@@ -497,6 +536,9 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     }
     if (shouldShowPosterQualityBadgesSide && qualityBadgesSide !== 'left') {
       config.qualityBadgesSide = qualityBadgesSide;
+    }
+    if (shouldShowPosterQualityBadgesPosition && posterQualityBadgesPosition !== 'auto') {
+      config.posterQualityBadgesPosition = posterQualityBadgesPosition;
     }
     if (posterQualityBadgesStyle !== DEFAULT_QUALITY_BADGES_STYLE) {
       config.posterQualityBadgesStyle = posterQualityBadgesStyle;
@@ -529,7 +571,7 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
       config.backdropRatingsLayout = backdropRatingsLayout;
     }
 
-    setConfigString(encodeBase64Url(JSON.stringify(config)));
+    return encodeBase64Url(JSON.stringify(config));
   }, [
     baseUrl,
     tmdbKey,
@@ -539,7 +581,10 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     logoRatingPreferences,
     posterStreamBadges,
     backdropStreamBadges,
+    shouldShowPosterQualityBadgesSide,
+    shouldShowPosterQualityBadgesPosition,
     qualityBadgesSide,
+    posterQualityBadgesPosition,
     posterQualityBadgesStyle,
     backdropQualityBadgesStyle,
     lang,
@@ -553,19 +598,15 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     backdropRatingsLayout,
   ]);
 
-  useEffect(() => {
-    const origin = normalizeBaseUrl(baseUrl || (typeof window !== 'undefined' ? window.location.origin : ''));
-    if (!origin) {
-      setProxyUrl('');
-      return;
+  const proxyUrl = useMemo(() => {
+    if (!baseUrl) {
+      return '';
     }
-
     const manifestUrl = normalizeManifestUrl(proxyManifestUrl);
     const tmdb = tmdbKey.trim();
     const mdb = mdblistKey.trim();
     if (!manifestUrl || isBareHttpUrl(manifestUrl) || !tmdb || !mdb) {
-      setProxyUrl('');
-      return;
+      return '';
     }
 
     const config: Record<string, string | boolean> = {
@@ -598,6 +639,9 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     if (shouldShowPosterQualityBadgesSide && qualityBadgesSide !== 'left') {
       config.qualityBadgesSide = qualityBadgesSide;
     }
+    if (shouldShowPosterQualityBadgesPosition && posterQualityBadgesPosition !== 'auto') {
+      config.posterQualityBadgesPosition = posterQualityBadgesPosition;
+    }
     if (posterQualityBadgesStyle !== DEFAULT_QUALITY_BADGES_STYLE) {
       config.posterQualityBadgesStyle = posterQualityBadgesStyle;
     }
@@ -627,12 +671,9 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
       config.backdropRatingsLayout = backdropRatingsLayout;
     }
 
-    if (origin) {
-      config.erdbBase = origin;
-    }
-
+    config.erdbBase = baseUrl;
     const encoded = encodeBase64Url(JSON.stringify(config));
-    setProxyUrl(`${origin}/proxy/${encoded}/manifest.json`);
+    return `${baseUrl}/proxy/${encoded}/manifest.json`;
   }, [
     proxyManifestUrl,
     tmdbKey,
@@ -643,7 +684,10 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     lang,
     posterStreamBadges,
     backdropStreamBadges,
+    shouldShowPosterQualityBadgesSide,
+    shouldShowPosterQualityBadgesPosition,
     qualityBadgesSide,
+    posterQualityBadgesPosition,
     posterQualityBadgesStyle,
     backdropQualityBadgesStyle,
     posterRatingStyle,
@@ -658,6 +702,18 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     proxyTranslateMeta,
     baseUrl,
   ]);
+
+  useEffect(() => {
+    if (!configString) {
+      setShowConfigString(false);
+    }
+  }, [configString]);
+
+  useEffect(() => {
+    if (!proxyUrl) {
+      setShowProxyUrl(false);
+    }
+  }, [proxyUrl]);
 
   const updateRatingPreferencesForType = (
     type: 'poster' | 'backdrop' | 'logo',
@@ -718,6 +774,7 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
       posterStreamBadges,
       backdropStreamBadges,
       qualityBadgesSide,
+      posterQualityBadgesPosition,
       posterQualityBadgesStyle,
       backdropQualityBadgesStyle,
       posterRatingStyle,
@@ -772,6 +829,12 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     }
     if (typeof payload.qualityBadgesSide === 'string' && isQualityBadgesSide(payload.qualityBadgesSide)) {
       setQualityBadgesSide(payload.qualityBadgesSide);
+    }
+    if (
+      typeof payload.posterQualityBadgesPosition === 'string' &&
+      isPosterQualityBadgesPosition(payload.posterQualityBadgesPosition)
+    ) {
+      setPosterQualityBadgesPosition(payload.posterQualityBadgesPosition);
     }
     if (typeof payload.posterQualityBadgesStyle === 'string' && isRatingStyle(payload.posterQualityBadgesStyle)) {
       setPosterQualityBadgesStyle(payload.posterQualityBadgesStyle);
@@ -900,6 +963,10 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
     tmdbKey.trim() &&
     mdblistKey.trim()
   );
+  const proxyDisplayValue = proxyUrl || `${baseUrl || 'https://erdb.example.com'}/proxy/{config}/manifest.json`;
+  const displayedConfigString =
+    canGenerateConfig && !showConfigString ? maskSensitiveText(configString) : configString;
+  const displayedProxyUrl = showProxyUrl ? proxyDisplayValue : maskSensitiveText(proxyDisplayValue);
   const activeRatingStyle =
     previewType === 'poster'
       ? posterRatingStyle
@@ -1256,6 +1323,18 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
                       ))}
                       </div>
                     </div>
+                    {shouldShowQualityBadgesPosition && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Side</span>
+                        <div className="flex gap-1 p-1 bg-[#0b0f15] rounded-lg border border-white/10">
+                          {POSTER_QUALITY_BADGE_POSITION_OPTIONS.map(option => (
+                            <button key={option.id} onClick={() => setPosterQualityBadgesPosition(option.id)} className={`px-2 py-1 rounded text-xs font-medium transition-colors ${posterQualityBadgesPosition === option.id ? 'bg-[#141b26] text-white' : 'text-slate-400 hover:text-white'}`}>
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {shouldShowQualityBadgesSide && (
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Side</span>
@@ -1319,15 +1398,26 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
               </div>
 
               <div className="rounded-[22px] border border-white/10 bg-white/[0.04] p-4 backdrop-blur-xl shadow-[0_25px_70px_-70px_rgba(0,0,0,0.8)]">
-                <h3 className="text-lg font-[var(--font-display)] text-white flex items-center gap-2">
-                  <Code2 className="w-5 h-5 text-orange-500" /> ERDB Config String
-                </h3>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-lg font-[var(--font-display)] text-white flex items-center gap-2">
+                    <Code2 className="w-5 h-5 text-orange-500" /> ERDB Config String
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setShowConfigString((value) => !value)}
+                    disabled={!canGenerateConfig}
+                    className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors ${canGenerateConfig ? 'border border-white/10 bg-[#0b0f15] text-slate-200 hover:bg-[#141b26]' : 'border border-white/5 bg-[#080b10] text-slate-600 cursor-not-allowed'}`}
+                  >
+                    {showConfigString ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showConfigString ? 'HIDE' : 'SHOW'}</span>
+                  </button>
+                </div>
                 <p className="mt-2 text-sm text-slate-400">
                   Base64url string containing API keys and all settings. Base URL is detected automatically from the current domain.
                 </p>
                 <div className="mt-3 rounded-2xl border border-white/10 bg-[#080b10]/90 p-3 max-h-28 overflow-auto scrollbar-hidden">
-                  <div className="font-mono text-xs text-slate-300 break-all whitespace-pre-wrap pr-2">
-                    {configString || 'Add TMDB key and MDBList key to generate the config string.'}
+                  <div className={`font-mono text-xs text-slate-300 break-all whitespace-pre-wrap pr-2 ${canGenerateConfig && !showConfigString ? 'select-none' : ''}`}>
+                    {displayedConfigString || 'Add TMDB key and MDBList key to generate the config string.'}
                   </div>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1403,13 +1493,23 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-[#0b0f15]/80 p-3">
-                  <div className="text-[11px] font-semibold text-slate-400">Generated Manifest</div>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold text-slate-400">Generated Manifest</div>
+                    <button
+                      type="button"
+                      onClick={() => setShowProxyUrl((value) => !value)}
+                      className="px-3 py-1.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors border border-white/10 bg-[#0b0f15] text-slate-200 hover:bg-[#141b26]"
+                    >
+                      {showProxyUrl ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      <span>{showProxyUrl ? 'HIDE' : 'SHOW'}</span>
+                    </button>
+                  </div>
                   <p className="mt-2 text-sm text-slate-400">
                     Use this URL in Stremio. It ends with manifest.json and has no query params.
                   </p>
                   <div className="mt-3 rounded-2xl border border-white/10 bg-[#080b10]/90 p-4">
-                    <div className="font-mono text-xs text-slate-300 break-all">
-                      {proxyUrl || `${baseUrl || 'https://erdb.example.com'}/proxy/{config}/manifest.json`}
+                    <div className={`font-mono text-xs text-slate-300 break-all ${!showProxyUrl ? 'select-none' : ''}`}>
+                      {displayedProxyUrl}
                     </div>
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1558,8 +1658,13 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
                       </tr>
                       <tr>
                         <td className="px-5 py-2 font-mono text-orange-400 text-xs">qualityBadgesSide</td>
-                        <td className="px-5 py-2 text-slate-400 text-xs">left, right (poster only)</td>
+                        <td className="px-5 py-2 text-slate-400 text-xs">left, right (poster top-bottom only)</td>
                         <td className="px-5 py-2 text-slate-500 text-xs">left</td>
+                      </tr>
+                      <tr>
+                        <td className="px-5 py-2 font-mono text-orange-400 text-xs">posterQualityBadgesPosition</td>
+                        <td className="px-5 py-2 text-slate-400 text-xs">auto, left, right (poster top/bottom only)</td>
+                        <td className="px-5 py-2 text-slate-500 text-xs">auto</td>
                       </tr>
                       <tr>
                         <td className="px-5 py-2 font-mono text-orange-400 text-xs">qualityBadgesStyle</td>
@@ -1831,7 +1936,8 @@ lang                    | Any TMDB ISO 639-1 code (en, it, fr, es, de, ja, ko, e
 streamBadges            | auto, on, off (global fallback)                                      | auto
 posterStreamBadges      | auto, on, off (poster only)                                          | auto
 backdropStreamBadges    | auto, on, off (backdrop only)                                        | auto
-qualityBadgesSide       | left, right (poster only)                                            | left
+qualityBadgesSide       | left, right (poster top-bottom only)                                 | left
+posterQualityBadgesPosition | auto, left, right (poster top/bottom only)                       | auto
 qualityBadgesStyle      | glass, square, plain (global fallback)                               | glass
 posterQualityBadgesStyle| glass, square, plain (poster only)                                   | glass
 backdropQualityBadgesStyle| glass, square, plain (backdrop only)                               | glass
@@ -1861,7 +1967,7 @@ Quality badges style can be set per-type via cfg.posterQualityBadgesStyle / cfg.
 --- URL BUILD ---
 const typeRatingStyle = type === 'poster' ? cfg.posterRatingStyle : type === 'backdrop' ? cfg.backdropRatingStyle : cfg.logoRatingStyle;
 const typeImageText = type === 'backdrop' ? cfg.backdropImageText : cfg.posterImageText;
-\${cfg.baseUrl}/\${type}/\${id}.jpg?tmdbKey=\${cfg.tmdbKey}&mdblistKey=\${cfg.mdblistKey}&ratings=\${cfg.ratings}&posterRatings=\${cfg.posterRatings}&backdropRatings=\${cfg.backdropRatings}&logoRatings=\${cfg.logoRatings}&lang=\${cfg.lang}&streamBadges=\${cfg.streamBadges}&posterStreamBadges=\${cfg.posterStreamBadges}&backdropStreamBadges=\${cfg.backdropStreamBadges}&qualityBadgesSide=\${cfg.qualityBadgesSide}&qualityBadgesStyle=\${cfg.qualityBadgesStyle}&posterQualityBadgesStyle=\${cfg.posterQualityBadgesStyle}&backdropQualityBadgesStyle=\${cfg.backdropQualityBadgesStyle}&ratingStyle=\${typeRatingStyle}&imageText=\${typeImageText}&posterRatingsLayout=\${cfg.posterRatingsLayout}&posterRatingsMaxPerSide=\${cfg.posterRatingsMaxPerSide}&backdropRatingsLayout=\${cfg.backdropRatingsLayout}
+\${cfg.baseUrl}/\${type}/\${id}.jpg?tmdbKey=\${cfg.tmdbKey}&mdblistKey=\${cfg.mdblistKey}&ratings=\${cfg.ratings}&posterRatings=\${cfg.posterRatings}&backdropRatings=\${cfg.backdropRatings}&logoRatings=\${cfg.logoRatings}&lang=\${cfg.lang}&streamBadges=\${cfg.streamBadges}&posterStreamBadges=\${cfg.posterStreamBadges}&backdropStreamBadges=\${cfg.backdropStreamBadges}&qualityBadgesSide=\${cfg.qualityBadgesSide}&posterQualityBadgesPosition=\${cfg.posterQualityBadgesPosition}&qualityBadgesStyle=\${cfg.qualityBadgesStyle}&posterQualityBadgesStyle=\${cfg.posterQualityBadgesStyle}&backdropQualityBadgesStyle=\${cfg.backdropQualityBadgesStyle}&ratingStyle=\${typeRatingStyle}&imageText=\${typeImageText}&posterRatingsLayout=\${cfg.posterRatingsLayout}&posterRatingsMaxPerSide=\${cfg.posterRatingsMaxPerSide}&backdropRatingsLayout=\${cfg.backdropRatingsLayout}
 
 Omit imageText when type=logo.
 
@@ -1870,10 +1976,10 @@ Skip any params that are undefined. Keep empty ratings/posterRatings/backdropRat
 
                 <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Live Examples</h4>
                 <pre className="text-xs font-mono text-slate-400 leading-6 space-y-1.5">
-                  <div className="text-slate-600 font-bold">// Movie Poster (IMDb)</div>
+                  <div className="text-slate-600 font-bold">{'// Movie Poster (IMDb)'}</div>
                   <div className="text-orange-200/70 truncate bg-white/[0.04] p-3 rounded-lg border border-white/5">{`${baseUrl || 'http://localhost:3000'}/poster/tt0133093.jpg?ratings=imdb,tmdb&ratingStyle=plain`}</div>
 
-                  <div className="text-slate-600 font-bold mt-4">// Backdrop (TMDB)</div>
+                  <div className="text-slate-600 font-bold mt-4">{'// Backdrop (TMDB)'}</div>
                   <div className="text-orange-200/70 truncate bg-white/[0.04] p-3 rounded-lg border border-white/5">{`${baseUrl || 'http://localhost:3000'}/backdrop/tmdb:603.jpg?ratings=mdblist&backdropRatingsLayout=right-vertical`}</div>
 
                 </pre>
